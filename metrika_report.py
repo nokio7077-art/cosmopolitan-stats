@@ -32,7 +32,7 @@ import requests
 
 YANDEX_TOKEN = os.environ["YANDEX_OAUTH_TOKEN"]
 COUNTER_ID = os.environ.get("YANDEX_COUNTER_ID", "112345804")
-ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")  # опционально: без ключа отчёт считается по правилам
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 GITHUB_REPO = os.environ["GITHUB_REPO"]
 GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
@@ -100,7 +100,49 @@ def fetch_top_sources(date1, date2, limit=5):
     return rows[:limit]
 
 
-# ---------- анализ через Claude ----------
+# ---------- анализ без ИИ (по правилам) ----------
+
+def pct_change(actual, average):
+    if not average:
+        return None
+    return (actual - average) / average * 100.0
+
+
+def rule_based_analysis(yesterday, week, sources):
+    lines = []
+    week_avg = {m: (week.get(m) or 0) / 7.0 for m in METRICS}
+
+    visits_y = yesterday.get("ym:s:visits") or 0
+    visits_avg = week_avg.get("ym:s:visits") or 0
+    delta = pct_change(visits_y, visits_avg)
+
+    if delta is None:
+        lines.append(f"Вчера {fmt(visits_y)} визитов. Недостаточно истории для сравнения со средним.")
+    else:
+        direction = "выше" if delta >= 0 else "ниже"
+        lines.append(f"Вчера {fmt(visits_y)} визитов — это {abs(delta):.0f}% {direction} среднего за 7 дней "
+                      f"({fmt(round(visits_avg))}).")
+        if delta >= 30:
+            lines.append("Заметный всплеск трафика — стоит посмотреть, что его вызвало (источники ниже).")
+        elif delta <= -30:
+            lines.append("Заметное падение трафика по сравнению с обычным уровнем — возможно, стоит проверить сайт.")
+
+    bounce_y = yesterday.get("ym:s:bounceRate")
+    bounce_avg = week_avg.get("ym:s:bounceRate")
+    if bounce_y is not None and bounce_avg:
+        bdelta = bounce_y - bounce_avg
+        if bdelta >= 10:
+            lines.append(f"Отказы выше обычного ({bounce_y:.0f}% против ~{bounce_avg:.0f}% в среднем) — "
+                          f"возможна проблема с загрузкой или нерелевантный источник трафика.")
+
+    if sources:
+        top_name, top_visits = sources[0]
+        lines.append(f"Больше всего визитов за неделю дал источник «{top_name}» ({fmt(top_visits)}).")
+
+    return " ".join(lines)
+
+
+# ---------- анализ через Claude (опционально, если задан ANTHROPIC_API_KEY) ----------
 
 def analyze_with_claude(yesterday, week, sources):
     prompt = (
@@ -142,7 +184,7 @@ def fmt(value):
     return str(value)
 
 
-def render_html(yesterday_vals, week_vals, sources, analysis, generated_at, report_date):
+def render_html(yesterday_vals, week_vals, sources, analysis, generated_at, report_date, analysis_source="правила"):
     cards = ""
     for m in METRICS:
         cards += f"""
@@ -191,7 +233,7 @@ def render_html(yesterday_vals, week_vals, sources, analysis, generated_at, repo
     <h2>Вчера / 7 дней</h2>
     <div class="grid">{cards}</div>
 
-    <h2>Разбор от ИИ</h2>
+    <h2>Разбор ({analysis_source})</h2>
     <div class="analysis">{analysis}</div>
 
     <h2>Источники трафика (7 дней)</h2>
@@ -242,14 +284,19 @@ def main():
     week_vals = totals_dict(week_payload, METRICS)
     sources = fetch_top_sources(str(week_ago), str(yesterday))
 
-    try:
-        analysis = analyze_with_claude(yesterday_vals, week_vals, sources)
-    except Exception as exc:  # не роняем весь отчёт, если ИИ-шаг не сработал
-        print(f"Claude analysis failed: {exc}", file=sys.stderr)
-        analysis = "Не удалось получить ИИ-разбор в этот раз — смотри цифры выше."
+    analysis_source = "правила"
+    if ANTHROPIC_KEY:
+        try:
+            analysis = analyze_with_claude(yesterday_vals, week_vals, sources)
+            analysis_source = "ИИ (Claude)"
+        except Exception as exc:  # не роняем весь отчёт, если ИИ-шаг не сработал
+            print(f"Claude analysis failed, falling back to rule-based: {exc}", file=sys.stderr)
+            analysis = rule_based_analysis(yesterday_vals, week_vals, sources)
+    else:
+        analysis = rule_based_analysis(yesterday_vals, week_vals, sources)
 
     generated_at = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    html = render_html(yesterday_vals, week_vals, sources, analysis, generated_at, str(yesterday))
+    html = render_html(yesterday_vals, week_vals, sources, analysis, generated_at, str(yesterday), analysis_source)
 
     result = publish_to_github(html)
     print(f"Опубликовано: {result.get('content', {}).get('html_url', 'ok')}")

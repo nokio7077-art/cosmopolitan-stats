@@ -28,6 +28,24 @@ import sys
 
 import requests
 
+
+def load_local_env(path=".env"):
+    """Простой загрузчик .env для локального запуска — не переопределяет уже
+    заданные переменные окружения, если такие есть (например, на сервере)."""
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip().strip('"').strip("'")
+            os.environ.setdefault(key, value)
+
+
+load_local_env()
+
 # ---------- конфигурация ----------
 
 YANDEX_TOKEN = os.environ["YANDEX_OAUTH_TOKEN"]

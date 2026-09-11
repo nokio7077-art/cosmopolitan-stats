@@ -29,9 +29,16 @@ import sys
 import requests
 
 
-def load_local_env(path=".env"):
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def load_local_env(path=None):
     """Простой загрузчик .env для локального запуска — не переопределяет уже
-    заданные переменные окружения, если такие есть (например, на сервере)."""
+    заданные переменные окружения, если такие есть. Файл ищется рядом со
+    скриптом, а не в текущей рабочей папке — это важно для Планировщика
+    заданий Windows, который может запускать программу из другой папки."""
+    if path is None:
+        path = os.path.join(SCRIPT_DIR, ".env")
     if not os.path.exists(path):
         return
     with open(path, "r", encoding="utf-8") as f:
